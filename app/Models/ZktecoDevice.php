@@ -73,15 +73,44 @@ class ZktecoDevice extends Model
      */
     public function admsBaseUrl(): string
     {
+        $override = trim((string) config('zkteco.adms_public_url', ''));
+        if ($override !== '') {
+            return rtrim($override, '/');
+        }
+
         $base = rtrim(self::publicApiBase(), '/');
         // Prefer /iclock under the public API origin (devices expect .../iclock)
         if (preg_match('#/index\.php$#i', $base)) {
             $origin = preg_replace('#/index\.php$#i', '', $base);
-
-            return $origin.'/iclock';
+            $url = $origin.'/iclock';
+        } else {
+            $url = preg_replace('#/api$#i', '', $base).'/iclock';
         }
 
-        return preg_replace('#/api$#i', '', $base).'/iclock';
+        // Devices cannot reach 127.0.0.1 / localhost — rewrite with LAN host when configured or detected.
+        $lanHost = trim((string) (config('zkteco.lan_host') ?: self::detectLanHost()));
+        if ($lanHost !== '' && preg_match('#^(https?://)(127\.0\.0\.1|localhost)(:\d+)?(/iclock)$#i', $url, $m)) {
+            return $m[1].$lanHost.($m[3] ?? '').$m[4];
+        }
+
+        return $url;
+    }
+
+    /** Best-effort first non-loopback IPv4 of this machine (for ADMS URL display). */
+    public static function detectLanHost(): ?string
+    {
+        try {
+            $hostname = gethostname();
+            if ($hostname) {
+                $ip = gethostbyname($hostname);
+                if ($ip && $ip !== $hostname && !str_starts_with($ip, '127.')) {
+                    return $ip;
+                }
+            }
+        } catch (\Throwable) {
+        }
+
+        return null;
     }
 
     public function punchesUrl(): string

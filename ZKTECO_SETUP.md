@@ -30,7 +30,9 @@ Same end result as Hikvision: each fingerprint punch creates a row on **Time Car
 
 ## Requirements
 
-- `APP_URL` must be a URL the **device can reach** (public HTTPS for cloud HR).
+- `APP_URL` must be a URL the **device can reach** (public HTTPS for cloud HR, e.g. `https://apijcfood.cyberneticde.site`).
+- If `APP_URL` is `http://127.0.0.1`, set `ZKTECO_LAN_HOST` (or `ZKTECO_ADMS_PUBLIC_URL`) so the ADMS URL shown in HR is the LAN/public host the K40 can open.
+- **Recent punches** only lists rows already imported into HR — empty means no ADMS push yet (not a LAN pull from device memory).
 - Nginx already forwards `/iclock` via `try_files` → `index.php` (see `deploy/nginx-laravel.conf.example`).
 - Roster must exist for the punch date (same as other attendance).
 
