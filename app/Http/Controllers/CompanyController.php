@@ -488,6 +488,7 @@ class CompanyController extends Controller
             'hr_url' => CompanyHostScope::normalizeHost((string) $company->frontend_host) !== ''
                 ? 'https://'.CompanyHostScope::normalizeHost((string) $company->frontend_host)
                 : null,
+            'process_config' => $company->process_config,
             'theme' => [
                 'primary' => $company->theme_primary ?: ($theme['primary'] ?? '#0B4F5C'),
                 'secondary' => $company->theme_secondary ?: ($theme['secondary'] ?? '#0D9488'),

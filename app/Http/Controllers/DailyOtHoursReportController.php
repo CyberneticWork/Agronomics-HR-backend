@@ -132,10 +132,14 @@ class DailyOtHoursReportController extends Controller
                 'shift' => $shift
                     ? (substr((string) $shift->start_time, 0, 5).' - '.substr((string) $shift->end_time, 0, 5))
                     : null,
-                'morning_ot' => round($morning, 2),
-                'evening_ot' => round($evening, 2),
-                'holiday_ot_hours' => round($holiday, 2),
-                'ot_hours' => round($total, 2),
+                'morning_ot' => $this->formatHoursToHhMm($morning),
+                'evening_ot' => $this->formatHoursToHhMm($evening),
+                'holiday_ot_hours' => $this->formatHoursToHhMm($holiday),
+                'ot_hours' => $this->formatHoursToHhMm($total),
+                'morning_ot_decimal' => round($morning, 2),
+                'evening_ot_decimal' => round($evening, 2),
+                'holiday_ot_hours_decimal' => round($holiday, 2),
+                'ot_hours_decimal' => round($total, 2),
                 'status' => $ot->status,
             ];
 
@@ -155,6 +159,14 @@ class DailyOtHoursReportController extends Controller
             return strnatcasecmp((string) $a['emp_no'], (string) $b['emp_no']);
         });
 
+        $totalsFormatted = [
+            'morning_ot' => $this->formatHoursToHhMm($totals['morning_ot']),
+            'evening_ot' => $this->formatHoursToHhMm($totals['evening_ot']),
+            'holiday_ot_hours' => $this->formatHoursToHhMm($totals['holiday_ot_hours']),
+            'ot_hours' => $this->formatHoursToHhMm($totals['ot_hours']),
+            'records' => $totals['records'],
+        ];
+
         foreach (['morning_ot', 'evening_ot', 'holiday_ot_hours', 'ot_hours'] as $key) {
             $totals[$key] = round($totals[$key], 2);
         }
@@ -162,9 +174,37 @@ class DailyOtHoursReportController extends Controller
         return response()->json([
             'from' => $from,
             'to' => $to,
+            'hour_format' => 'HH:MM',
             'data' => $rows,
-            'totals' => $totals,
+            'totals' => $totalsFormatted,
+            'totals_decimal' => $totals,
         ]);
+    }
+
+    private function formatHoursToHhMm(float $num): string
+    {
+        if ($num <= 0) {
+            return '00:00';
+        }
+        $hours = (int) floor($num);
+        $frac = (int) round(($num - $hours) * 100);
+
+        if ($frac === 15) {
+            $mins = 15;
+        } elseif ($frac === 30) {
+            $mins = 30;
+        } elseif ($frac === 45) {
+            $mins = 45;
+        } else {
+            $mins = (int) round(($num - $hours) * 60);
+        }
+
+        if ($mins >= 60) {
+            $hours += intdiv($mins, 60);
+            $mins = $mins % 60;
+        }
+
+        return sprintf('%02d:%02d', $hours, $mins);
     }
 
     private function inPunchesByEmployeeDate(array $employeeIds, string $from, string $to): array

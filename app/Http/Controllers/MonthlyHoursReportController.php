@@ -85,7 +85,7 @@ class MonthlyHoursReportController extends Controller
 
             foreach ($dates as $date) {
                 $value = (float) ($hoursByEmployeeDate[$employee->id][$date] ?? 0);
-                $dayMap[$date] = $value > 0 ? round($value, 2) : null;
+                $dayMap[$date] = $value > 0 ? $this->formatHoursToHhMm($value) : null;
                 if ($value > 0) {
                     $total += $value;
                     $dayTotals[$date] += $value;
@@ -100,13 +100,18 @@ class MonthlyHoursReportController extends Controller
                 'company_code' => $org?->company?->company_code,
                 'department' => $org?->department?->name,
                 'days' => $dayMap,
-                'total' => round($total, 2),
+                'total' => $this->formatHoursToHhMm($total),
+                'total_decimal' => round($total, 2),
             ];
         }
 
+        $formattedDayTotals = [];
         foreach ($dayTotals as $date => $sum) {
+            $formattedDayTotals[$date] = $sum > 0 ? $this->formatHoursToHhMm($sum) : '00:00';
             $dayTotals[$date] = round($sum, 2);
         }
+
+        $grandTotal = array_sum($dayTotals);
 
         return response()->json([
             'month' => $validated['month'],
@@ -114,10 +119,39 @@ class MonthlyHoursReportController extends Controller
             'from' => $from,
             'to' => $to,
             'dates' => $dates,
+            'hour_format' => 'HH:MM',
             'data' => $rows,
-            'day_totals' => $dayTotals,
-            'grand_total' => round(array_sum($dayTotals), 2),
+            'day_totals' => $formattedDayTotals,
+            'day_totals_decimal' => $dayTotals,
+            'grand_total' => $this->formatHoursToHhMm($grandTotal),
+            'grand_total_decimal' => round($grandTotal, 2),
         ]);
+    }
+
+    private function formatHoursToHhMm(float $num): string
+    {
+        if ($num <= 0) {
+            return '00:00';
+        }
+        $hours = (int) floor($num);
+        $frac = (int) round(($num - $hours) * 100);
+
+        if ($frac === 15) {
+            $mins = 15;
+        } elseif ($frac === 30) {
+            $mins = 30;
+        } elseif ($frac === 45) {
+            $mins = 45;
+        } else {
+            $mins = (int) round(($num - $hours) * 60);
+        }
+
+        if ($mins >= 60) {
+            $hours += intdiv($mins, 60);
+            $mins = $mins % 60;
+        }
+
+        return sprintf('%02d:%02d', $hours, $mins);
     }
 
     private function workingHoursByEmployeeDate(array $employeeIds, string $from, string $to): array

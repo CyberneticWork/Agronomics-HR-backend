@@ -12,7 +12,7 @@ class ScheduleReportService
     {
     }
 
-    public function build(string $month, string $year): array
+    public function build(string $month, string $year, ?int $companyId = null): array
     {
         $monthInt = max(1, (int)$month);
         $monthPadded = str_pad((string)$monthInt, 2, '0', STR_PAD_LEFT);
@@ -20,11 +20,20 @@ class ScheduleReportService
         $monthLabel = Carbon::create((int)$year, $monthInt, 1)->format('M-y');
 
         $loanReport = $this->loanReportService->buildReport();
-        $loanSummary = $this->buildLoanSummary($loanReport['loans'] ?? [], $monthYear, $monthLabel);
-        $loanDetails = $this->buildLoanDetails($loanReport['loans'] ?? [], $monthYear);
-        $staffFund = $this->buildStaffFundReport($monthPadded, $monthInt, $year);
-        $staffFundDetail07a = $this->buildStaffFundDetail07a($monthInt, $year);
-        $company = $this->resolveCompanyInfo($monthPadded, $monthInt, $year);
+        $loans = $loanReport['loans'] ?? [];
+        if ($companyId) {
+            $comp = \App\Models\company::find($companyId);
+            if ($comp) {
+                $loans = collect($loans)->filter(function ($loan) use ($comp) {
+                    return strcasecmp((string)($loan['company_name'] ?? ''), (string)$comp->name) === 0;
+                })->values()->all();
+            }
+        }
+        $loanSummary = $this->buildLoanSummary($loans, $monthYear, $monthLabel);
+        $loanDetails = $this->buildLoanDetails($loans, $monthYear);
+        $staffFund = $this->buildStaffFundReport($monthPadded, $monthInt, $year, $companyId);
+        $staffFundDetail07a = $this->buildStaffFundDetail07a($monthInt, $year, $companyId);
+        $company = $this->resolveCompanyInfo($monthPadded, $monthInt, $year, $companyId);
 
         return [
             'month' => $monthPadded,
@@ -175,16 +184,21 @@ class ScheduleReportService
         return $sections;
     }
 
-    private function buildStaffFundReport(string $monthPadded, int $monthInt, string $year): array
+    private function buildStaffFundReport(string $monthPadded, int $monthInt, string $year, ?int $companyId = null): array
     {
         $months = [$monthPadded, $monthInt, (string)$monthInt];
-        $salaries = salary_process::with(['employee.compensation', 'employee.organizationAssignment'])
+        $salariesQuery = salary_process::with(['employee.compensation', 'employee.organizationAssignment'])
             ->whereIn('month', $months)
             ->where('year', $year)
-            ->whereIn('status', ['pending', 'processed', 'issued'])
-            ->get();
+            ->whereIn('status', ['pending', 'processed', 'issued']);
 
-        $ytdPaid = $this->loadYtdStaffFundPaid($year, $monthInt);
+        if ($companyId) {
+            $salariesQuery->whereHas('employee.organizationAssignment', fn($q) => $q->where('company_id', $companyId));
+        }
+
+        $salaries = $salariesQuery->get();
+
+        $ytdPaid = $this->loadYtdStaffFundPaid($year, $monthInt, $companyId);
 
         $detailRows = [];
         $detailTotals = [
@@ -241,11 +255,16 @@ class ScheduleReportService
             $monthValues[] = str_pad((string)$m, 2, '0', STR_PAD_LEFT);
             $monthValues[] = (string)$m;
         }
-        $ytdSalaries = salary_process::with(['employee.compensation'])
+        $ytdSalariesQuery = salary_process::with(['employee.compensation'])
             ->where('year', $year)
             ->whereIn('month', array_unique($monthValues))
-            ->whereIn('status', ['pending', 'processed', 'issued'])
-            ->get();
+            ->whereIn('status', ['pending', 'processed', 'issued']);
+
+        if ($companyId) {
+            $ytdSalariesQuery->whereHas('employee.organizationAssignment', fn($q) => $q->where('company_id', $companyId));
+        }
+
+        $ytdSalaries = $ytdSalariesQuery->get();
 
         foreach ($ytdSalaries as $ys) {
             $yb = is_string($ys->salary_breakdown) ? json_decode($ys->salary_breakdown, true) : ($ys->salary_breakdown ?? []);
@@ -335,7 +354,7 @@ class ScheduleReportService
         }
     }
 
-    private function loadYtdStaffFundPaid(string $year, int $throughMonth): array
+    private function loadYtdStaffFundPaid(string $year, int $throughMonth, ?int $companyId = null): array
     {
         $monthValues = [];
         for ($m = 1; $m <= $throughMonth; $m++) {
@@ -344,10 +363,15 @@ class ScheduleReportService
             $monthValues[] = (string)$m;
         }
 
-        $records = salary_process::where('year', $year)
+        $query = salary_process::where('year', $year)
             ->whereIn('month', array_unique($monthValues))
-            ->whereIn('status', ['pending', 'processed', 'issued'])
-            ->get(['employee_id', 'salary_breakdown']);
+            ->whereIn('status', ['pending', 'processed', 'issued']);
+
+        if ($companyId) {
+            $query->whereHas('employee.organizationAssignment', fn($q) => $q->where('company_id', $companyId));
+        }
+
+        $records = $query->get(['employee_id', 'salary_breakdown']);
 
         $totals = [];
         foreach ($records as $record) {
@@ -363,7 +387,7 @@ class ScheduleReportService
     }
 
     /** Schedule 07(a): monthly staff/sports fund contributions per employee for fiscal year. */
-    private function buildStaffFundDetail07a(int $selectedMonth, string $year): array
+    private function buildStaffFundDetail07a(int $selectedMonth, string $year, ?int $companyId = null): array
     {
         $yearInt = (int)$year;
         $fyStartYear = $selectedMonth >= 4 ? $yearInt : $yearInt - 1;
@@ -383,11 +407,16 @@ class ScheduleReportService
         }
 
         $monthValues = [$selectedMonth, str_pad((string)$selectedMonth, 2, '0', STR_PAD_LEFT), (string)$selectedMonth];
-        $currentSalaries = salary_process::with(['employee.compensation', 'employee.organizationAssignment'])
+        $currentQuery = salary_process::with(['employee.compensation', 'employee.organizationAssignment'])
             ->whereIn('month', $monthValues)
             ->where('year', $year)
-            ->whereIn('status', ['pending', 'processed', 'issued'])
-            ->get();
+            ->whereIn('status', ['pending', 'processed', 'issued']);
+
+        if ($companyId) {
+            $currentQuery->whereHas('employee.organizationAssignment', fn($q) => $q->where('company_id', $companyId));
+        }
+
+        $currentSalaries = $currentQuery->get();
 
         $employeeSections = [];
 
@@ -471,8 +500,18 @@ class ScheduleReportService
         ];
     }
 
-    private function resolveCompanyInfo(string $monthPadded, int $monthInt, string $year): array
+    private function resolveCompanyInfo(string $monthPadded, int $monthInt, string $year, ?int $companyId = null): array
     {
+        if ($companyId) {
+            $companyModel = \App\Models\company::find($companyId);
+            if ($companyModel) {
+                return [
+                    'name' => $companyModel->name,
+                    'registration_no' => $companyModel->company_code ?? '-',
+                ];
+            }
+        }
+
         $months = [$monthPadded, $monthInt, (string)$monthInt];
         $record = salary_process::whereIn('month', $months)
             ->where('year', $year)

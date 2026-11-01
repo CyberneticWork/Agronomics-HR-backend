@@ -16,7 +16,7 @@ class ShiftHoursReportController extends Controller
     /**
      * Working hours within shift window AND extra hours after shift end.
      * report_type: within | extra | both
-     * Hours are returned in H:MM format (e.g. 8:30).
+     * Hours are returned in HH:MM format (e.g. 08:30).
      */
     public function index(Request $request)
     {
@@ -162,14 +162,14 @@ class ShiftHoursReportController extends Controller
             'report_type' => $reportType,
             'from_date' => $from,
             'to_date' => $to,
-            'hour_format' => 'H:MM',
+            'hour_format' => 'HH:MM',
             'totals' => $totals,
             'data' => $rows,
         ]);
     }
 
     /**
-     * Convert minutes to H:MM (e.g. 510 -> "8:30").
+     * Convert minutes to HH:MM (e.g. 510 -> "08:30").
      */
     private function formatMinutesAsHm(int $minutes): string
     {
@@ -177,7 +177,7 @@ class ShiftHoursReportController extends Controller
         $hours = intdiv($minutes, 60);
         $mins = $minutes % 60;
 
-        return sprintf('%d:%02d', $hours, $mins);
+        return sprintf('%02d:%02d', $hours, $mins);
     }
 
     private function resolveRosterAndShift(employee $employee, string $date): array

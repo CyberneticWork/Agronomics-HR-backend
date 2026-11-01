@@ -12,27 +12,39 @@ class ReportController extends Controller
     {
         $month = $request->query('month');
         $year = $request->query('year');
+        $companyId = $request->query('company_id');
         if (!$month || !$year) {
             return response()->json(['message' => 'Month and year are required'], 422);
         }
 
-        return response()->json($scheduleReports->build((string)$month, (string)$year));
+        return response()->json($scheduleReports->build((string)$month, (string)$year, $companyId ? (int)$companyId : null));
     }
 
     public function getMonthlyReportData(Request $request)
     {
         $month = $request->query('month');
         $year = $request->query('year');
+        $companyId = $request->query('company_id');
         $months = [str_pad($month, 2, '0', STR_PAD_LEFT), (int)$month, (string)(int)$month];
 
-        $salaries = salary_process::with(['employee.compensation', 'employee.organizationAssignment'])
+        $salariesQuery = salary_process::with([
+            'employee.compensation',
+            'employee.organizationAssignment.company'
+        ])
             ->whereIn('month', $months)
             ->where('year', $year)
-            ->whereIn('status', ['pending', 'processed', 'issued'])
-            ->get();
+            ->whereIn('status', ['pending', 'processed', 'issued']);
+
+        if ($companyId) {
+            $salariesQuery->whereHas('employee.organizationAssignment', function ($q) use ($companyId) {
+                $q->where('company_id', $companyId);
+            });
+        }
+
+        $salaries = $salariesQuery->get();
 
         $monthInt = max(1, (int)$month);
-        $ytdStaffFundPaid = self::loadYtdStaffFundPaid($year, $monthInt);
+        $ytdStaffFundPaid = self::loadYtdStaffFundPaid($year, $monthInt, $companyId ? (int)$companyId : null);
 
         $data = $salaries->map(function ($s) use ($ytdStaffFundPaid, $monthInt) {
             $breakdown = is_string($s->salary_breakdown) ? json_decode($s->salary_breakdown, true) : ($s->salary_breakdown ?? []);
@@ -193,6 +205,9 @@ class ReportController extends Controller
                 'emp_no' => $s->employee_no ?? '-',
                 'name' => $s->full_name ?? '-',
                 'epf_member_no' => $s->employee->epf ?? '-',
+                'company_id' => $s->employee?->organizationAssignment?->company_id,
+                'company_name' => $s->employee?->organizationAssignment?->company?->name ?? $s->company_name ?? '-',
+                'company_code' => $s->employee?->organizationAssignment?->company?->company_code ?? '-',
                 'date_joined' => $dateJoined,
                 'bank' => $comp->bank_name ?? '-',
                 'branch' => $comp->branch_name ?? '-',
@@ -346,7 +361,7 @@ class ReportController extends Controller
     }
 
     /** YTD staff fund payments per employee (Schedule 07 cumulative). */
-    private static function loadYtdStaffFundPaid(string $year, int $throughMonth): array
+    private static function loadYtdStaffFundPaid(string $year, int $throughMonth, ?int $companyId = null): array
     {
         $monthValues = [];
         for ($m = 1; $m <= $throughMonth; $m++) {
@@ -355,10 +370,15 @@ class ReportController extends Controller
             $monthValues[] = (string)$m;
         }
 
-        $records = salary_process::where('year', $year)
+        $query = salary_process::where('year', $year)
             ->whereIn('month', array_unique($monthValues))
-            ->whereIn('status', ['pending', 'processed', 'issued'])
-            ->get(['employee_id', 'salary_breakdown']);
+            ->whereIn('status', ['pending', 'processed', 'issued']);
+
+        if ($companyId) {
+            $query->whereHas('employee.organizationAssignment', fn($q) => $q->where('company_id', $companyId));
+        }
+
+        $records = $query->get(['employee_id', 'salary_breakdown']);
 
         $totals = [];
         foreach ($records as $record) {
