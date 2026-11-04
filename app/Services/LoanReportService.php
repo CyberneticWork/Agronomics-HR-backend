@@ -193,6 +193,9 @@ class LoanReportService
             'deduct_from_label' => $this->deductFromLabel($loan),
             'deduct_basic_amount' => $loan->deduct_basic_amount,
             'deduct_bonus_amount' => $loan->deduct_bonus_amount,
+            'created_at_date' => $loan->created_at?->format('Y-m-d'),
+            'loan_date' => $loan->request_date?->format('Y-m-d')
+                ?: ($loan->created_at?->format('Y-m-d') ?: ($loan->start_from?->format('Y-m-d') ?: '-')),
             'start_from' => $loan->start_from?->format('Y-m-d'),
             'start_from_display' => $loan->start_from?->format('M Y'),
             'request_date' => $loan->request_date?->format('Y-m-d'),

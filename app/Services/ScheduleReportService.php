@@ -67,12 +67,24 @@ class ScheduleReportService
             foreach ($employeeLoans as $index => $loan) {
                 $monthly = $this->monthlyLoanFigures($loan, $monthYear);
                 $loanLabel = 'Loan ' . str_pad((string)($index + 1), 2, '0', STR_PAD_LEFT);
+                $loanDate = !empty($loan['loan_date']) && $loan['loan_date'] !== '-'
+                    ? $loan['loan_date']
+                    : (!empty($loan['request_date'])
+                        ? Carbon::parse($loan['request_date'])->format('Y-m-d')
+                        : (!empty($loan['created_at_date'])
+                            ? Carbon::parse($loan['created_at_date'])->format('Y-m-d')
+                            : (!empty($loan['start_from'])
+                                ? Carbon::parse($loan['start_from'])->format('Y-m-d')
+                                : '-')));
 
                 $rows[] = [
+                    'employee_no' => $loan['employee_no'] ?? '-',
+                    'epf_no' => $loan['employee_epf'] ?? '-',
                     'employee_name' => $first ? ($loan['employee_name'] ?? '-') : '',
                     'loan_label' => $loanLabel,
                     'loan_id' => $loan['loan_id'] ?? '-',
-                    'granted_date' => $loan['start_from_display'] ?? $loan['start_from'] ?? '-',
+                    'granted_date' => $loanDate,
+                    'loan_date' => $loanDate,
                     'granted_amount' => (float)($loan['loan_amount'] ?? 0),
                     'loan_monthly_deduction' => $monthly['principal'],
                     'loan_total_deduction' => (float)($loan['total_principal_paid'] ?? 0),
@@ -97,9 +109,9 @@ class ScheduleReportService
         return [
             'headers' => [
                 'Employee Name', 'Loan',
-                "Granted Date", 'Granted Amount',
-                "Monthly Deduction ({$monthLabel})", 'Total Deduction', 'Balance Loan Outstanding',
-                "Monthly Deduction ({$monthLabel})", 'Total Deduction', 'Balance Interest Outstanding',
+                'Loan Date', 'Loan Amount',
+                'Loan Installment', 'Total Loan Deduction', 'Balance Loan Outstanding',
+                'Interest Deduction', 'Total Interest Deduction', 'Balance Interest Outstanding',
             ],
             'rows' => $rows,
             'footer' => [
@@ -107,6 +119,7 @@ class ScheduleReportService
                 'loan_label' => '',
                 'loan_id' => '',
                 'granted_date' => '',
+                'loan_date' => '',
                 'granted_amount' => round($totals['granted_amount'], 2),
                 'loan_monthly_deduction' => round($totals['loan_monthly'], 2),
                 'loan_total_deduction' => round($totals['loan_total'], 2),
@@ -129,6 +142,15 @@ class ScheduleReportService
         foreach ($loans as $loan) {
             $scheduleRows = [];
             $runningBalance = (float)($loan['loan_amount'] ?? 0);
+            $loanDate = !empty($loan['loan_date']) && $loan['loan_date'] !== '-'
+                ? $loan['loan_date']
+                : (!empty($loan['request_date'])
+                    ? Carbon::parse($loan['request_date'])->format('Y-m-d')
+                    : (!empty($loan['created_at_date'])
+                        ? Carbon::parse($loan['created_at_date'])->format('Y-m-d')
+                        : (!empty($loan['start_from'])
+                            ? Carbon::parse($loan['start_from'])->format('Y-m-d')
+                            : '-')));
 
             foreach ($loan['schedule'] ?? [] as $row) {
                 $dueMonth = $row['due_date'] ? substr((string)$row['due_date'], 0, 7) : null;
@@ -144,7 +166,7 @@ class ScheduleReportService
 
                 $scheduleRows[] = [
                     'month' => $dueMonth ? Carbon::parse($row['due_date'])->format('M-Y') : '-',
-                    'loan_date' => $row['due_date_display'] ?? $row['due_date'] ?? '-',
+                    'loan_date' => $loanDate,
                     'loan_amount' => (float)($loan['loan_amount'] ?? 0),
                     'monthly_deduction' => round($principal, 2),
                     'balance_outstanding' => round($balance, 2),
@@ -158,7 +180,7 @@ class ScheduleReportService
                 if ($monthly['principal'] > 0 || $monthly['interest'] > 0) {
                     $scheduleRows[] = [
                         'month' => Carbon::parse($monthYear . '-01')->format('M-Y'),
-                        'loan_date' => $loan['start_from_display'] ?? $loan['start_from'] ?? '-',
+                        'loan_date' => $loanDate,
                         'loan_amount' => (float)($loan['loan_amount'] ?? 0),
                         'monthly_deduction' => $monthly['principal'],
                         'balance_outstanding' => (float)($loan['total_principal_outstanding'] ?? 0),
@@ -173,10 +195,14 @@ class ScheduleReportService
             }
 
             $sections[] = [
+                'employee_no' => $loan['employee_no'] ?? '-',
+                'epf_no' => $loan['employee_epf'] ?? '-',
                 'employee_name' => $loan['employee_name'] ?? '-',
                 'loan_id' => $loan['loan_id'] ?? '-',
                 'loan_label' => $loan['loan_id'] ?? 'LOAN 01',
+                'loan_date' => $loanDate,
                 'headers' => ['Month', 'Loan Date', 'Loan Amount', 'Monthly Deduction', 'Balance Outstanding', 'Interest', 'Total Deduction'],
+                'spm_headers' => ['Month', 'Loan Amount', 'Loan Installment', 'Balance Loan Outstanding', 'Interest', 'Total Deduction'],
                 'rows' => $scheduleRows,
             ];
         }
@@ -215,7 +241,8 @@ class ScheduleReportService
             $resigned = $org->date_of_resigning ?? null;
             $joinedDisplay = $joined ? date('Y/m/d', strtotime($joined)) : '-';
             $resignedDisplay = $resigned ? date('Y/m/d', strtotime($resigned)) : '-';
-            $period = $this->formatPeriodOfService($joined, $resigned);
+            $asOfDate = Carbon::create((int)$year, $monthInt, 1)->endOfMonth();
+            $period = $this->formatPeriodOfService($joined, $resigned, $asOfDate);
 
             $basic = (float)($comp->basic_salary ?? $s->basic_salary ?? 0);
             $allowance = (float)($breakdown['monthly_bonus'] ?? $comp->monthly_bonus ?? 0);
@@ -225,6 +252,8 @@ class ScheduleReportService
             $totalContrib = round($employeeContrib + $employerContrib, 2);
 
             $detailRows[] = [
+                'employee_no' => $s->employee_no ?? $s->employee?->attendance_employee_no ?? '-',
+                'epf_no' => $s->employee?->epf ?? '-',
                 'date_joined' => $joinedDisplay,
                 'date_resigned' => $resignedDisplay,
                 'period_of_service' => $period,
@@ -284,6 +313,11 @@ class ScheduleReportService
                     'Basic Salary', 'Allowance', 'Total Salary',
                     'Employee Contribution', 'Employer Contribution', 'Total Contribution',
                 ],
+                'spm_headers' => [
+                    'Date Joined', 'Period of Service', 'Employee Name',
+                    'Basic Salary', 'Monthly Bonus', 'Total Salary',
+                    'Employee Contribution', 'Employer Contribution', 'Total Contribution',
+                ],
                 'rows' => $detailRows,
                 'footer' => [
                     'date_joined' => '', 'date_resigned' => '', 'period_of_service' => 'TOTAL', 'employee_name' => '',
@@ -338,17 +372,19 @@ class ScheduleReportService
         return ['principal' => 0.0, 'interest' => 0.0];
     }
 
-    private function formatPeriodOfService(?string $joined, ?string $resigned): string
+    private function formatPeriodOfService(?string $joined, ?string $resigned, ?Carbon $asOf = null): string
     {
         if (!$joined) {
             return '-';
         }
         try {
-            $start = Carbon::parse($joined);
-            $end = $resigned ? Carbon::parse($resigned) : Carbon::today();
-            $years = $start->diffInYears($end);
-            $months = $start->copy()->addYears($years)->diffInMonths($end);
-            return trim("{$years}y {$months}m");
+            $start = Carbon::parse($joined)->startOfDay();
+            $end = $resigned ? Carbon::parse($resigned)->endOfDay() : ($asOf ? $asOf->copy()->endOfMonth()->endOfDay() : Carbon::today()->endOfDay());
+            if ($start->gt($end)) {
+                return '0Y 0M';
+            }
+            $diff = $start->diff($end);
+            return "{$diff->y}Y {$diff->m}M";
         } catch (\Throwable) {
             return '-';
         }
@@ -467,6 +503,8 @@ class ScheduleReportService
             }
 
             $employeeSections[] = [
+                'employee_no' => $current->employee_no ?? $current->employee?->attendance_employee_no ?? '-',
+                'epf_no' => $current->employee?->epf ?? '-',
                 'employee_name' => $current->full_name ?? '-',
                 'date_joined' => $joined ? date('Y/m/d', strtotime($joined)) : '-',
                 'date_resigned' => $resigned ? date('Y/m/d', strtotime($resigned)) : '-',

@@ -52,6 +52,7 @@ class ReportController extends Controller
             $deductions = is_string($s->deductions) ? json_decode($s->deductions, true) : ($s->deductions ?? []);
             $bonuses = is_string($s->bonuses) ? json_decode($s->bonuses, true) : ($s->bonuses ?? []);
             $coinage = is_string($s->coinage_breakdown) ? json_decode($s->coinage_breakdown, true) : ($s->coinage_breakdown ?? null);
+            $otCoinage = is_string($s->ot_coinage_breakdown) ? json_decode($s->ot_coinage_breakdown, true) : ($s->ot_coinage_breakdown ?? null);
 
             $comp = $s->employee->compensation ?? null;
             $joined = $s->employee->organizationAssignment->date_of_joining ?? null;
@@ -79,7 +80,7 @@ class ReportController extends Controller
             $budgetaryAllowance = round($totalAllowances, 2);
             $totalSalarySch01 = round($baseBasic + $budgetaryAllowance + $budgetRelief + $increment, 2);
 
-            $monthlyBonus = (float)($breakdown['monthly_bonus'] ?? 0);
+            $monthlyBonus = (float)($breakdown['monthly_bonus'] ?? $comp->monthly_bonus ?? 0);
             $otherBonuses = array_reduce($bonuses, function ($c, $b) {
                 $cat = strtolower((string)($b['category'] ?? ''));
                 if ($cat === 'monthly_bonus') {
@@ -205,6 +206,7 @@ class ReportController extends Controller
                 'emp_no' => $s->employee_no ?? '-',
                 'name' => $s->full_name ?? '-',
                 'epf_member_no' => $s->employee->epf ?? '-',
+                'epf_no' => $s->employee->epf ?? '-',
                 'company_id' => $s->employee?->organizationAssignment?->company_id,
                 'company_name' => $s->employee?->organizationAssignment?->company?->name ?? $s->company_name ?? '-',
                 'company_code' => $s->employee?->organizationAssignment?->company?->company_code ?? '-',
@@ -219,10 +221,12 @@ class ReportController extends Controller
                 'increment_amount' => $increment,
                 'total_salary_sch01' => $totalSalarySch01,
                 'monthly_bonus' => $monthlyBonus,
+                'total_salary' => round(($adjustedBasic > 0 ? $adjustedBasic : $baseBasic) + $monthlyBonus, 2),
                 'salary_component' => $salaryComponent,
                 'allowance_component' => $allowanceComponent,
 
-                'basic_salary' => $adjustedBasic,
+                'basic_salary' => $adjustedBasic > 0 ? $adjustedBasic : $baseBasic,
+                'base_basic_salary' => $baseBasic > 0 ? $baseBasic : $adjustedBasic,
                 'gross_salary' => $grossSalary,
                 'net_salary' => $netSalary,
                 'total_deductions' => $totalDeductions,
@@ -282,11 +286,14 @@ class ReportController extends Controller
                 'ot_night_fees' => (float)($breakdown['ot_night_fees'] ?? 0),
                 'holiday_ot_hours' => (float)($breakdown['holiday_ot_hours'] ?? 0),
                 'holiday_ot_fees' => (float)($breakdown['holiday_ot_fees'] ?? 0),
+                'total_ot_amount' => round($otTotal, 2),
+                'ot_amount' => round($otTotal, 2),
 
                 'bank_amount' => $bankAmount,
                 'cash_amount' => $cashAmount,
 
                 'saved_coinage' => $coinage,
+                'saved_ot_coinage' => $otCoinage,
                 'raw_allowances' => $allowances,
                 'raw_deductions' => $deductions,
                 'raw_bonuses' => $bonuses,
@@ -397,16 +404,112 @@ class ReportController extends Controller
     {
         $request->validate(['coinage_data' => 'required|array']);
         try {
+            $isOt = (bool)($request->input('is_ot', false) || $request->input('type') === 'ot');
+            $field = $isOt ? 'ot_coinage_breakdown' : 'coinage_breakdown';
+
             foreach ($request->coinage_data as $data) {
                 if (isset($data['process_id'])) {
                     salary_process::where('id', $data['process_id'])->update([
-                        'coinage_breakdown' => json_encode($data['notes'])
+                        $field => json_encode($data['notes'])
                     ]);
                 }
             }
-            return response()->json(['message' => 'Coinage data saved successfully']);
+            return response()->json(['message' => ($isOt ? 'OT coinage' : 'Coinage') . ' data saved successfully']);
         } catch (\Exception $e) {
             return response()->json(['message' => 'Failed to save: ' . $e->getMessage()], 500);
         }
+    }
+
+    public function saveOtCoinageData(Request $request)
+    {
+        $request->merge(['is_ot' => true]);
+        return $this->saveCoinageData($request);
+    }
+
+    public function leaveSummary(Request $request)
+    {
+        $year = (int)($request->input('year', date('Y')));
+        $month = $request->filled('month') ? (int)$request->input('month') : null;
+        $companyId = $request->input('company_id');
+
+        $empQuery = \App\Models\employee::with([
+            'organizationAssignment.company',
+            'compensation',
+        ])->where('is_active', 1);
+
+        if ($companyId) {
+            $empQuery->whereHas('organizationAssignment', function ($q) use ($companyId) {
+                $q->where('company_id', $companyId);
+            });
+        }
+
+        $employees = $empQuery->orderBy('attendance_employee_no')->get();
+        $calculator = app(\App\Services\ShopAndOfficeLeaveCalculator::class);
+
+        $data = $employees->map(function ($emp) use ($year, $month, $calculator) {
+            $manual = \App\Models\EmployeeLeaveBalance::where('employee_id', $emp->id)
+                ->where('year', $year)
+                ->where('status', 'active')
+                ->whereNull('deleted_at')
+                ->sum('entitled_days');
+
+            if ($manual > 0) {
+                $entitled = (float)$manual;
+            } else {
+                $joined = $emp->organizationAssignment?->date_of_joining;
+                if ($joined) {
+                    $targetDate = $month ? \Carbon\Carbon::create($year, $month)->endOfMonth() : \Carbon\Carbon::create($year, 12, 31);
+                    $law = $calculator->calculate(\Carbon\Carbon::parse($joined), $targetDate);
+                    $entitled = (float)($law['casual_days'] ?? 0) + (float)($law['annual_days'] ?? 0);
+                } else {
+                    $entitled = 0.0;
+                }
+            }
+
+            $leavesQuery = \App\Models\leave_master::where('employee_id', $emp->id)
+                ->whereIn('status', ['Approved', 'HR_Approved'])
+                ->whereNull('deleted_at')
+                ->where(function ($q) use ($year, $month) {
+                    $q->whereYear('leave_date', $year)->orWhereYear('leave_from', $year);
+                });
+
+            if ($month) {
+                $leavesQuery->where(function ($q) use ($month) {
+                    $q->whereMonth('leave_date', '<=', $month)->orWhereMonth('leave_from', '<=', $month);
+                });
+            }
+
+            $leaves = $leavesQuery->get();
+            $obtained = 0.0;
+            foreach ($leaves as $l) {
+                if ($l->leave_balance_days !== null) {
+                    $obtained += (float)$l->leave_balance_days;
+                } elseif ($l->is_short_leave) {
+                    $obtained += 0.25;
+                } elseif ($l->is_half_day) {
+                    $obtained += 0.5;
+                } else {
+                    $obtained += (float)($l->leave_duration ?? 1);
+                }
+            }
+
+            $balance = max(0.0, round($entitled - $obtained, 2));
+            $fullName = $emp->full_name ?: ($emp->name_with_initials ?: ($emp->display_name ?: '-'));
+
+            return [
+                'employee_id' => $emp->id,
+                'emp_no' => $emp->attendance_employee_no ?? '-',
+                'epf_no' => $emp->epf ?? $emp->epf_number ?? $emp->epf_member_no ?? '-',
+                'full_name' => $fullName,
+                'employee_full_name' => $fullName,
+                'name' => $fullName,
+                'employee_name' => $fullName,
+                'leave_entitlement' => round($entitled, 2),
+                'leave_obtained' => round($obtained, 2),
+                'leave_balance' => round($balance, 2),
+            ];
+        });
+
+        return response()->json($data);
     }
 }

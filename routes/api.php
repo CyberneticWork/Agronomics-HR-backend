@@ -240,6 +240,7 @@ Route::get('/reports/epf-etf', [ReportController::class, 'downloadEpfEtf']);
 
 Route::get('/reports/monthly-data', [ReportController::class, 'getMonthlyReportData']);
 Route::get('/reports/schedule-data', [ReportController::class, 'getScheduleReportData']);
+Route::get('/reports/leave-summary', [ReportController::class, 'leaveSummary']);
 
 // ✅ Special route FIRST (Bonuses)
 Route::get('/bonuses/by-company-or-department', [BonusesController::class, 'getBonusesByCompanyOrDepartment']);
@@ -591,6 +592,7 @@ Route::apiResource('suppliers', SupplierController::class);
 
 //record
 Route::post('/reports/save-coinage', [App\Http\Controllers\ReportController::class, 'saveCoinageData']);
+Route::post('/reports/save-ot-coinage', [App\Http\Controllers\ReportController::class, 'saveOtCoinageData']);
 
 // Employee Performance Evaluation endpoints (these can remain public if needed)
 Route::post('/pms/employee-performance/calculate', [PmsController::class, 'calculateEmployeePerformance']);
