@@ -137,6 +137,16 @@ class HikvisionController extends Controller
 
         $result = $this->attendanceService->syncDevice($device, $from, $to);
 
+        if (!($result['ok'] ?? false)) {
+            $message = $result['message']
+                ?? (($result['errors'][0] ?? null) ?: 'Sync failed');
+
+            return response()->json([
+                'message' => $message,
+                'data' => $result,
+            ], 422);
+        }
+
         return response()->json([
             'message' => $result['message'] ?? 'Sync completed',
             'data' => $result,

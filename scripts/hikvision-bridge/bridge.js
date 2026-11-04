@@ -443,46 +443,82 @@ function isoLocal(d) {
   return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}T${pad(d.getHours())}:${pad(d.getMinutes())}:${pad(d.getSeconds())}${sign}${pad(Math.floor(abs / 60))}:${pad(abs % 60)}`;
 }
 
+function deviceCandidateBases() {
+  const port = Number(DEVICE_PORT) || 80;
+  const scheme = port === 443 ? 'https' : 'http';
+  const primary = String(process.env.HIKVISION_DEVICE_BASE || `${scheme}://${DEVICE_IP}:${port}`).replace(
+    /\/$/,
+    '',
+  );
+  const bases = [primary];
+  // Port 80 often only redirects; real ISAPI is HTTPS:443 on modern Hikvision terminals.
+  if (port === 80) {
+    bases.push(`https://${DEVICE_IP}:443`);
+  } else if (port !== 443) {
+    bases.push(`https://${DEVICE_IP}:${port}`);
+    bases.push(`http://${DEVICE_IP}:${port}`);
+  }
+  return [...new Set(bases)];
+}
+
 async function probeDeviceLogin() {
   if (Date.now() < lockUntilMs) {
     console.error(lockWaitMessage());
     return false;
   }
 
-  const url = `http://${DEVICE_IP}:${DEVICE_PORT}/ISAPI/System/deviceInfo`;
-  try {
-    const res = await digestRequest(url, { method: 'GET' });
-    if (res.status === 200) {
-      const model = (res.text.match(/<model>([^<]+)<\/model>/i) || [])[1];
-      console.log(`[bridge] Device login OK via ${url}${model ? ` · ${model}` : ''}`);
-      process.env.HIKVISION_DEVICE_BASE = url.replace(/\/ISAPI\/System\/deviceInfo$/i, '');
-      return true;
+  let lastErr = '';
+  for (const base of deviceCandidateBases()) {
+    const url = `${base}/ISAPI/System/deviceInfo`;
+    try {
+      const res = await digestRequest(url, { method: 'GET' });
+      if (res.status === 200) {
+        const model = (res.text.match(/<model>([^<]+)<\/model>/i) || [])[1];
+        console.log(`[bridge] Device login OK via ${url}${model ? ` · ${model}` : ''}`);
+        process.env.HIKVISION_DEVICE_BASE = base;
+        return true;
+      }
+      // Redirect / connection-style failures: try next base (e.g. http→https).
+      if ([301, 302, 307, 308].includes(res.status)) {
+        lastErr = `${url} → HTTP ${res.status} redirect`;
+        console.warn(`[bridge] ${lastErr} — trying alternate HTTPS base`);
+        continue;
+      }
+      const check = res.userCheck || parseUserCheck(res.text);
+      if (check.lockStatus === 'lock') {
+        console.error(
+          `[bridge] ${url} → admin LOCKED for ${check.unlockTime || '?'}s (retryLoginTime=${check.retryLoginTime}).`,
+        );
+        console.error(lockWaitMessage());
+        return false;
+      }
+      lastErr = `${url} → HTTP ${res.status} ${res._authDebug || ''} ${check.statusString || ''}`.trim();
+      console.error(`[bridge] ${lastErr}`);
+      if (res.status === 401 || res.status === 403) {
+        break;
+      }
+    } catch (e) {
+      lastErr = `${url} → ${e.message || e}`;
+      console.error(`[bridge] ${lastErr}`);
     }
-    const check = res.userCheck || parseUserCheck(res.text);
-    if (check.lockStatus === 'lock') {
-      console.error(
-        `[bridge] ${url} → admin LOCKED for ${check.unlockTime || '?'}s (retryLoginTime=${check.retryLoginTime}).`,
-      );
-      console.error(lockWaitMessage());
-      return false;
-    }
-    console.error(
-      `[bridge] ${url} → HTTP ${res.status} ${res._authDebug || ''} ${check.statusString || ''}`.trim(),
-    );
-  } catch (e) {
-    console.error(`[bridge] ${url} → ${e.message || e}`);
   }
   console.error(
     `[bridge] LOGIN FAILED for ${DEVICE_USER}@${DEVICE_IP}:${DEVICE_PORT} (passwordChars=${DEVICE_PASSWORD.length}).`,
   );
   console.error(
+    '[bridge] If the device web UI is https://IP, set DEVICE_PORT=443 in .env (this terminal redirects HTTP:80).',
+  );
+  console.error(
     '[bridge] In C:\\hikvision-bridge\\.env quote the web password, e.g. DEVICE_PASSWORD="your-web-password" because @ and # break unquoted .env values.',
   );
+  if (lastErr) console.error(`[bridge] Last error: ${lastErr}`);
   return false;
 }
 
 function deviceBase() {
-  return String(process.env.HIKVISION_DEVICE_BASE || `http://${DEVICE_IP}:${DEVICE_PORT}`).replace(/\/$/, '');
+  const port = Number(DEVICE_PORT) || 80;
+  const scheme = port === 443 ? 'https' : 'http';
+  return String(process.env.HIKVISION_DEVICE_BASE || `${scheme}://${DEVICE_IP}:${port}`).replace(/\/$/, '');
 }
 
 async function fetchDeviceEvents(from, to, maxPages = 20) {

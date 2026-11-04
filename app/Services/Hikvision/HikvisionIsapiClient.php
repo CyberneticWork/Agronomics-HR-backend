@@ -367,16 +367,42 @@ XML;
 
     private function request(HikvisionDevice $device, string $method, string $path, mixed $body = null, ?string $contentType = null): array
     {
-        $url = rtrim($device->baseUrl(), '/') . $path;
         $password = $device->password;
 
         if (!$password) {
             return ['ok' => false, 'message' => 'Device password is missing or cannot be decrypted'];
         }
 
+        $last = ['ok' => false, 'message' => 'Cannot reach device at '.$device->ip_address];
+
+        foreach ($device->candidateBaseUrls() as $base) {
+            $url = rtrim($base, '/').$path;
+            $result = $this->sendRequest($device, $method, $url, $body, $contentType, $password);
+            if ($result['ok'] ?? false) {
+                return $result;
+            }
+            $last = $result;
+            // Wrong password / locked admin — do not burn retries on alternate schemes.
+            $status = (int) ($result['status'] ?? 0);
+            if (in_array($status, [401, 403], true)) {
+                return $result;
+            }
+        }
+
+        return $last;
+    }
+
+    private function sendRequest(
+        HikvisionDevice $device,
+        string $method,
+        string $url,
+        mixed $body,
+        ?string $contentType,
+        string $password,
+    ): array {
         try {
             $pending = Http::timeout(20)
-                ->withOptions(['verify' => false])
+                ->withOptions(['verify' => false, 'allow_redirects' => false])
                 ->withDigestAuth($device->username, $password);
 
             if ($body !== null) {
@@ -396,18 +422,32 @@ XML;
                 $response = $pending->send($method, $url);
             }
 
+            // HTTP→HTTPS redirect means this base is wrong; try next candidate.
+            if (in_array($response->status(), [301, 302, 307, 308], true)) {
+                return [
+                    'ok' => false,
+                    'status' => $response->status(),
+                    'message' => 'Device redirected from '.$url.' — trying HTTPS if available',
+                ];
+            }
+
             if (!$response->successful()) {
                 Log::warning('Hikvision ISAPI request failed', [
                     'device_id' => $device->id,
-                    'path' => $path,
+                    'url' => $url,
                     'status' => $response->status(),
                     'body' => $response->body(),
                 ]);
 
+                $hint = '';
+                if ((int) $response->status() === 401) {
+                    $hint = ' (check device web username/password; use Port 443 if the browser opens https://'.$device->ip_address.')';
+                }
+
                 return [
                     'ok' => false,
                     'status' => $response->status(),
-                    'message' => 'Device returned HTTP ' . $response->status(),
+                    'message' => 'Device returned HTTP '.$response->status().$hint,
                     'body' => $response->body(),
                 ];
             }
@@ -423,7 +463,7 @@ XML;
         } catch (ConnectionException $e) {
             return [
                 'ok' => false,
-                'message' => 'Cannot reach device at ' . $device->ip_address . ': ' . $e->getMessage(),
+                'message' => 'Cannot reach '.$url.': '.$e->getMessage(),
             ];
         } catch (\Throwable $e) {
             return [
