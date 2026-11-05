@@ -54,27 +54,40 @@ class EmployeeLeaveBalanceController extends Controller
         $validated['leave_type'] = trim($validated['leave_type']);
         $validated['status'] = $validated['status'] ?? 'active';
 
-        $row = EmployeeLeaveBalance::withTrashed()
-            ->where('employee_id', $validated['employee_id'])
-            ->where('year', $validated['year'])
-            ->where('leave_type', $validated['leave_type'])
-            ->first();
+        try {
+            $row = EmployeeLeaveBalance::withTrashed()
+                ->where('employee_id', $validated['employee_id'])
+                ->where('year', $validated['year'])
+                ->where('leave_type', $validated['leave_type'])
+                ->first();
 
-        if ($row) {
-            if ($row->trashed()) {
-                $row->restore();
+            if ($row) {
+                if ($row->trashed()) {
+                    $row->restore();
+                }
+                $row->update($validated);
+            } else {
+                $row = EmployeeLeaveBalance::create($validated);
             }
-            $row->update($validated);
-        } else {
-            $row = EmployeeLeaveBalance::create($validated);
+
+            $row->load(['employee:id,full_name,attendance_employee_no,name_with_initials']);
+
+            return response()->json([
+                'message' => 'Leave balance saved successfully.',
+                'data' => $this->transform($row),
+            ], 201);
+        } catch (\Illuminate\Database\UniqueConstraintViolationException $e) {
+            return response()->json([
+                'message' => "A leave balance for this employee already exists for {$validated['leave_type']} ({$validated['year']}).",
+                'errors' => [
+                    'leave_type' => ["A leave balance for this employee already exists for {$validated['leave_type']} ({$validated['year']})."],
+                ],
+            ], 422);
+        } catch (\Throwable $e) {
+            return response()->json([
+                'message' => 'Failed to save leave balance: ' . $e->getMessage(),
+            ], 500);
         }
-
-        $row->load(['employee:id,full_name,attendance_employee_no,name_with_initials']);
-
-        return response()->json([
-            'message' => 'Leave balance saved successfully.',
-            'data' => $this->transform($row),
-        ], 201);
     }
 
     public function update(Request $request, int $id): JsonResponse
@@ -94,13 +107,50 @@ class EmployeeLeaveBalanceController extends Controller
             $validated['leave_type'] = trim($validated['leave_type']);
         }
 
-        $row->update($validated);
-        $row->load(['employee:id,full_name,attendance_employee_no,name_with_initials']);
+        $employeeId = $validated['employee_id'] ?? $row->employee_id;
+        $year = $validated['year'] ?? $row->year;
+        $leaveType = $validated['leave_type'] ?? $row->leave_type;
 
-        return response()->json([
-            'message' => 'Leave balance updated successfully.',
-            'data' => $this->transform($row),
-        ]);
+        $conflict = EmployeeLeaveBalance::withTrashed()
+            ->where('id', '!=', $id)
+            ->where('employee_id', $employeeId)
+            ->where('year', $year)
+            ->where('leave_type', $leaveType)
+            ->first();
+
+        if ($conflict) {
+            if ($conflict->trashed()) {
+                $conflict->forceDelete();
+            } else {
+                return response()->json([
+                    'message' => "A leave balance for this employee already exists for {$leaveType} ({$year}).",
+                    'errors' => [
+                        'leave_type' => ["A leave balance for this employee already exists for {$leaveType} ({$year})."],
+                    ],
+                ], 422);
+            }
+        }
+
+        try {
+            $row->update($validated);
+            $row->load(['employee:id,full_name,attendance_employee_no,name_with_initials']);
+
+            return response()->json([
+                'message' => 'Leave balance updated successfully.',
+                'data' => $this->transform($row),
+            ]);
+        } catch (\Illuminate\Database\UniqueConstraintViolationException $e) {
+            return response()->json([
+                'message' => "A leave balance for this employee already exists for {$leaveType} ({$year}).",
+                'errors' => [
+                    'leave_type' => ["A leave balance for this employee already exists for {$leaveType} ({$year})."],
+                ],
+            ], 422);
+        } catch (\Throwable $e) {
+            return response()->json([
+                'message' => 'Failed to update leave balance: ' . $e->getMessage(),
+            ], 500);
+        }
     }
 
     public function destroy(int $id): JsonResponse

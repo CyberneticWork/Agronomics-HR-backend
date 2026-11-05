@@ -96,9 +96,30 @@ class HikvisionDevice extends Model
 
     public function baseUrl(): string
     {
-        $scheme = $this->port === 443 ? 'https' : 'http';
+        $port = (int) ($this->port ?: 80);
+        $scheme = $port === 443 ? 'https' : 'http';
 
-        return sprintf('%s://%s:%d', $scheme, $this->ip_address, $this->port);
+        return sprintf('%s://%s:%d', $scheme, $this->ip_address, $port);
+    }
+
+    /**
+     * Bases to try for ISAPI. Many terminals advertise port 80 but only speak HTTPS on 443
+     * (HTTP redirects / Digest breaks across the redirect).
+     */
+    public function candidateBaseUrls(): array
+    {
+        $ip = trim((string) $this->ip_address);
+        $port = (int) ($this->port ?: 80);
+        $urls = [$this->baseUrl()];
+
+        if ($port === 80) {
+            $urls[] = sprintf('https://%s:443', $ip);
+        } elseif ($port !== 443) {
+            $urls[] = sprintf('https://%s:%d', $ip, $port);
+            $urls[] = sprintf('http://%s:%d', $ip, $port);
+        }
+
+        return array_values(array_unique(array_filter($urls)));
     }
 
     public static function publicApiBase(): string

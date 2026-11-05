@@ -25,7 +25,7 @@ This HR system supports **both** real-time and batch attendance from your Hikvis
    | Model | DS-K1T320MFWX |
    | Serial | GG4907842 |
    | IP | 192.168.1.64 |
-   | Port | 80 |
+   | Port | **443** if the device web UI is `https://…` (common); else 80 |
    | Username | admin |
    | Password | (device admin password) |
 

@@ -137,17 +137,60 @@ class HikvisionController extends Controller
 
         $result = $this->attendanceService->syncDevice($device, $from, $to);
 
+        if (!($result['ok'] ?? false)) {
+            $message = $result['message']
+                ?? (($result['errors'][0] ?? null) ?: 'Sync failed');
+
+            return response()->json([
+                'message' => $message,
+                'data' => $result,
+            ], 422);
+        }
+
         return response()->json([
             'message' => $result['message'] ?? 'Sync completed',
             'data' => $result,
         ]);
     }
 
+    /** Create sync-queue tables if a live host has not run migrate yet (avoids Sync Now HTTP 503). */
+    private function ensureSyncRequestTables(): void
+    {
+        if (!Schema::hasTable('hikvision_sync_requests') && Schema::hasTable('hikvision_devices')) {
+            Schema::create('hikvision_sync_requests', function ($table) {
+                $table->id();
+                $table->foreignId('device_id')->constrained('hikvision_devices')->cascadeOnDelete();
+                $table->date('from_date');
+                $table->date('to_date');
+                $table->string('status', 20)->default('pending');
+                $table->unsignedBigInteger('requested_by')->nullable();
+                $table->unsignedInteger('device_punches')->default(0);
+                $table->unsignedInteger('imported')->default(0);
+                $table->unsignedInteger('skipped')->default(0);
+                $table->text('message')->nullable();
+                $table->text('errors')->nullable();
+                $table->timestamp('started_at')->nullable();
+                $table->timestamp('finished_at')->nullable();
+                $table->timestamps();
+                $table->index(['device_id', 'status']);
+            });
+        }
+
+        if (Schema::hasTable('hikvision_devices') && !Schema::hasColumn('hikvision_devices', 'agent_last_seen_at')) {
+            Schema::table('hikvision_devices', function ($table) {
+                $table->timestamp('agent_last_seen_at')->nullable();
+            });
+        }
+    }
+
     /** Cloud HR cannot reach the device, so the office bridge picks this range up on its next poll. */
     private function queueBridgeSync(HikvisionDevice $device, array $validated, Request $request)
     {
+        $this->ensureSyncRequestTables();
         if (!Schema::hasTable('hikvision_sync_requests')) {
-            return response()->json(['message' => 'Server update pending: run "php artisan migrate" on the HR API, then try again.'], 503);
+            return response()->json([
+                'message' => 'Sync queue table missing. Run "php artisan migrate" on the Hilburn API, then try Sync Now again.',
+            ], 422);
         }
 
         $to = isset($validated['to_date']) ? Carbon::parse($validated['to_date'])->startOfDay() : today();
@@ -196,6 +239,7 @@ class HikvisionController extends Controller
     public function syncRequests(int $id)
     {
         $device = HikvisionDevice::findOrFail($id);
+        $this->ensureSyncRequestTables();
         $requests = Schema::hasTable('hikvision_sync_requests')
             ? $device->syncRequests()->latest('id')->limit(10)->get()
             : collect();
@@ -217,7 +261,10 @@ class HikvisionController extends Controller
         if (!$this->hikvisionSecretOk($request)) {
             return response()->json(['message' => 'Unauthorized'], 401);
         }
+        $this->ensureSyncRequestTables();
         if (!Schema::hasTable('hikvision_sync_requests')) {
+            $device->forceFill(['agent_last_seen_at' => now()])->save();
+
             return response()->json(['data' => []]);
         }
 
