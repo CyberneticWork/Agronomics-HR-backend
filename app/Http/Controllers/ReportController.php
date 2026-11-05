@@ -120,11 +120,22 @@ class ReportController extends Controller
             $personalOutNoPay = (float)($breakdown['personal_out_nopay_deduction'] ?? 0);
             $preHireBasicNoPay = (float)($breakdown['pre_hire_nopay_basic'] ?? 0);
             $preHireBonusNoPay = (float)($breakdown['pre_hire_nopay_bonus'] ?? 0);
+            $leaveShortfallBasicNoPay = (float)($breakdown['leave_shortfall_nopay_basic_deduction'] ?? 0);
+            $leaveShortfallBonusNoPay = (float)($breakdown['leave_shortfall_nopay_bonus_deduction'] ?? 0);
+            $excessLateBasicNoPay = (float)($breakdown['excess_late_nopay_basic'] ?? 0);
+            $excessLateBonusNoPay = (float)($breakdown['excess_late_nopay_bonus'] ?? 0);
+            $lateGraceBasicNoPay = (float)($breakdown['late_grace_nopay_basic'] ?? 0);
+            $lateGraceBonusNoPay = (float)($breakdown['late_grace_nopay_bonus'] ?? 0);
 
-            $basicNoPay = round($fullDayNoPay + $preHireBasicNoPay, 2);
+            $basicNoPay = round(
+                $fullDayNoPay + $preHireBasicNoPay + $leaveShortfallBasicNoPay
+                + $excessLateBasicNoPay + $lateGraceBasicNoPay,
+                2
+            );
             $bonusNoPay = round(
                 $saturdayNoPay + $earlyOutNoPay + $shortLeaveDed + $halfDayNoPay + $majorLateDed
-                + $personalOutNoPay + $preHireBonusNoPay,
+                + $personalOutNoPay + $preHireBonusNoPay + $leaveShortfallBonusNoPay
+                + $excessLateBonusNoPay + $lateGraceBonusNoPay,
                 2
             );
             $totalNoPayForReport = round($basicNoPay + $bonusNoPay, 2);
@@ -139,8 +150,44 @@ class ReportController extends Controller
                 }
                 return 0.0;
             };
-            $basicNoPayDays = $deriveDays($basicNoPay);
-            $bonusNoPayDays = $deriveDays($bonusNoPay);
+
+            // Day counts stored by the payroll run; split items (leave shortfall, late, pre-hire) count once in the total
+            $leaveShortfallDays = (float)($breakdown['leave_shortfall_nopay_days'] ?? 0);
+            $excessLateDays = (float)($breakdown['excess_late_nopay_days'] ?? 0);
+            $lateGraceDays = (float)($breakdown['late_grace_nopay_days'] ?? 0);
+            $monthlyLateDays = (float)($breakdown['monthly_late_nopay_days'] ?? 0);
+            $personalOutDays = (float)($breakdown['personal_out_nopay_days'] ?? 0);
+            $preHireDays = (float)($breakdown['pre_hire_nopay_days'] ?? 0);
+            $onlyIf = static fn(float $amount, float $days): float => $amount > 0 ? $days : 0.0;
+
+            $basicNoPayDays = round(
+                $deriveDays($fullDayNoPay)
+                + $onlyIf($leaveShortfallBasicNoPay, $leaveShortfallDays)
+                + $onlyIf($excessLateBasicNoPay, $excessLateDays)
+                + $onlyIf($lateGraceBasicNoPay, $lateGraceDays)
+                + $onlyIf($preHireBasicNoPay, $preHireDays),
+                2
+            );
+            $bonusNoPayDays = round(
+                $deriveDays($saturdayNoPay + $earlyOutNoPay + $shortLeaveDed + $halfDayNoPay)
+                + $onlyIf($leaveShortfallBonusNoPay, $leaveShortfallDays)
+                + $onlyIf($majorLateDed, $monthlyLateDays)
+                + $onlyIf($lateGraceBonusNoPay, $lateGraceDays)
+                + $onlyIf($excessLateBonusNoPay, $excessLateDays)
+                + $onlyIf($personalOutNoPay, $personalOutDays)
+                + $onlyIf($preHireBonusNoPay, $preHireDays),
+                2
+            );
+            $totalNoPayDays = round(
+                $deriveDays($fullDayNoPay + $saturdayNoPay + $earlyOutNoPay + $shortLeaveDed + $halfDayNoPay)
+                + $onlyIf($leaveShortfallBasicNoPay + $leaveShortfallBonusNoPay, $leaveShortfallDays)
+                + $onlyIf($majorLateDed, $monthlyLateDays)
+                + $onlyIf($lateGraceBasicNoPay + $lateGraceBonusNoPay, $lateGraceDays)
+                + $onlyIf($excessLateBasicNoPay + $excessLateBonusNoPay, $excessLateDays)
+                + $onlyIf($personalOutNoPay, $personalOutDays)
+                + $onlyIf($preHireBasicNoPay + $preHireBonusNoPay, $preHireDays),
+                2
+            );
             if ($basicNoPayDays <= 0 && $basicNoPay > 0) {
                 $basicNoPayDays = (float)($s->approved_no_pay_days ?? 0);
             }
@@ -253,12 +300,12 @@ class ReportController extends Controller
                 'epf_12' => $epfEmployer,
                 'etf_3' => (float)($breakdown['etf_employer_contribution'] ?? round($salaryForEpf * 0.03, 2)),
 
-                'no_pay_days' => round($basicNoPayDays + $bonusNoPayDays, 2),
+                'no_pay_days' => $totalNoPayDays,
                 'no_pay_amount' => $totalNoPayForReport,
                 'basic_nopay_days' => $basicNoPayDays,
                 'basic_nopay_amount' => $basicNoPay,
-                'salary_nopay_days' => $basicNoPayDays,
-                'salary_nopay_amount' => $basicNoPay,
+                'salary_nopay_days' => $totalNoPayDays,
+                'salary_nopay_amount' => $totalNoPayForReport,
                 'allowance_nopay_days' => $bonusNoPayDays,
                 'allowance_nopay_amount' => $bonusNoPay,
                 'per_day_salary' => $perDaySalary,
@@ -511,5 +558,220 @@ class ReportController extends Controller
         });
 
         return response()->json($data);
+    }
+
+    /**
+     * Monthly attendance report: per-employee daily time card sheet plus late / leave summaries.
+     */
+    public function attendanceReport(Request $request)
+    {
+        $request->validate([
+            'month' => 'required|numeric|min:1|max:12',
+            'year' => 'required|numeric|min:2000|max:2100',
+            'company_id' => 'nullable|integer',
+        ]);
+
+        $month = (int) $request->input('month');
+        $year = (int) $request->input('year');
+        $companyId = $request->input('company_id');
+
+        $start = \Carbon\Carbon::create($year, $month, 1)->startOfDay();
+        $end = $start->copy()->endOfMonth()->startOfDay();
+        $yearStart = \Carbon\Carbon::create($year, 1, 1)->toDateString();
+
+        $empQuery = \App\Models\employee::with(['organizationAssignment'])->where('is_active', 1);
+        if ($companyId) {
+            $empQuery->whereHas('organizationAssignment', function ($q) use ($companyId) {
+                $q->where('company_id', $companyId);
+            });
+        }
+        $employees = $empQuery->orderBy('attendance_employee_no')->get();
+        $employeeIds = $employees->pluck('id')->all();
+
+        $cards = \App\Models\time_card::whereIn('employee_id', $employeeIds)
+            ->whereNull('deleted_at')
+            ->whereBetween('date', [$start->toDateString(), $end->toDateString()])
+            ->orderBy('date')->orderBy('time')
+            ->get()
+            ->groupBy('employee_id');
+
+        $hasShiftId = \Illuminate\Support\Facades\Schema::hasColumn('time_cards', 'shift_id');
+        $shiftStarts = $hasShiftId ? \App\Models\shifts::whereIn(
+            'id',
+            \App\Models\time_card::whereIn('employee_id', $employeeIds)
+                ->whereBetween('date', [$start->toDateString(), $end->toDateString()])
+                ->whereNotNull('shift_id')->pluck('shift_id')->unique()->all()
+        )->pluck('start_time', 'id') : collect();
+
+        $leaves = \App\Models\leave_master::whereIn('employee_id', $employeeIds)
+            ->whereIn('status', ['Approved', 'HR_Approved'])
+            ->whereNull('deleted_at')
+            ->where(function ($q) use ($yearStart, $end) {
+                $q->whereBetween('leave_date', [$yearStart, $end->toDateString()])
+                    ->orWhereBetween('leave_from', [$yearStart, $end->toDateString()]);
+            })
+            ->get()
+            ->groupBy('employee_id');
+
+        $holidayQuery = \Illuminate\Support\Facades\DB::table('leave_calendars')->whereNull('deleted_at')
+            ->whereDate('start_date', '<=', $end->toDateString())
+            ->where(function ($q) use ($start) {
+                $q->whereNull('end_date')->whereDate('start_date', '>=', $start->toDateString())
+                    ->orWhereDate('end_date', '>=', $start->toDateString());
+            });
+        if ($companyId) {
+            $holidayQuery->where('company_id', $companyId);
+        }
+        $holidays = [];
+        foreach ($holidayQuery->get() as $h) {
+            $from = \Carbon\Carbon::parse($h->start_date)->startOfDay();
+            $to = \Carbon\Carbon::parse($h->end_date ?: $h->start_date)->startOfDay();
+            for ($d = $from->copy(); $d->lte($to); $d->addDay()) {
+                $holidays[$h->company_id ?? 0][$d->toDateString()] = trim((string) ($h->reason ?: $h->leave_type));
+            }
+        }
+
+        $leaveDates = static function ($leave): array {
+            $dates = [];
+            if ($leave->leave_from && $leave->leave_to) {
+                $from = \Carbon\Carbon::parse($leave->leave_from)->startOfDay();
+                $to = \Carbon\Carbon::parse($leave->leave_to)->startOfDay();
+                for ($d = $from->copy(); $d->lte($to); $d->addDay()) {
+                    $dates[] = $d->toDateString();
+                }
+            } elseif ($leave->leave_date) {
+                $dates[] = \Carbon\Carbon::parse($leave->leave_date)->toDateString();
+            }
+            return $dates;
+        };
+        $leaveKind = static function ($leave): string {
+            if ($leave->is_short_leave) return 'short';
+            if ($leave->is_half_day) return 'half';
+            return 'full';
+        };
+
+        $result = [];
+        foreach ($employees as $emp) {
+            $assignment = $emp->organizationAssignment;
+            $holidayMap = $holidays[$assignment->company_id ?? 0] ?? [];
+            $empCards = $cards->get($emp->id, collect());
+
+            $inByDay = [];
+            $outByDay = [];
+            $remarksByDay = [];
+            $lateByDay = [];
+            foreach ($empCards as $c) {
+                $isOut = in_array(strtoupper((string) $c->status), ['OUT', 'EARLY OUT'], true);
+                $day = $isOut ? \Carbon\Carbon::parse($c->actual_date ?: $c->date)->toDateString() : \Carbon\Carbon::parse($c->date)->toDateString();
+                if ($isOut) {
+                    $outByDay[$day] = substr((string) $c->time, 0, 5);
+                } elseif (!isset($inByDay[$day])) {
+                    $inByDay[$day] = substr((string) $c->time, 0, 5);
+                    if (strtoupper((string) $c->status) === 'LATE COMING' && !empty($c->shift_id) && isset($shiftStarts[$c->shift_id])) {
+                        $minutes = (int) floor((strtotime((string) $c->time) - strtotime((string) $shiftStarts[$c->shift_id])) / 60);
+                        $lateByDay[$day] = max(0, $minutes);
+                    } elseif (strtoupper((string) $c->status) === 'LATE COMING') {
+                        $lateByDay[$day] = 0;
+                    }
+                }
+                if (trim((string) $c->remarks) !== '') {
+                    // keyed by the Time Card's own date so the remark lands on the row the user entered it for
+                    $remarkDay = \Carbon\Carbon::parse($c->date)->toDateString();
+                    $remarksByDay[$remarkDay] = $remarksByDay[$remarkDay] ?? [];
+                    if (!in_array($c->remarks, $remarksByDay[$remarkDay], true)) {
+                        $remarksByDay[$remarkDay][] = $c->remarks;
+                    }
+                }
+            }
+
+            $leaveByDay = [];
+            $yearly = array_fill(1, $month, ['full' => 0.0, 'short' => 0.0, 'half' => 0.0, 'nopay' => 0.0]);
+            foreach ($leaves->get($emp->id, collect()) as $l) {
+                $kind = $leaveKind($l);
+                $dates = $leaveDates($l);
+                foreach ($dates as $dt) {
+                    $carbon = \Carbon\Carbon::parse($dt);
+                    if ($carbon->year !== $year || $carbon->month > $month) continue;
+                    $yearly[$carbon->month][$kind] += 1;
+                    if ($carbon->month === $month) {
+                        $leaveByDay[$dt] = $kind;
+                    }
+                }
+                if (!empty($dates) && (float) $l->nopay_days > 0) {
+                    $first = \Carbon\Carbon::parse($dates[0]);
+                    if ($first->year === $year && $first->month <= $month) {
+                        $yearly[$first->month]['nopay'] += (float) $l->nopay_days;
+                    }
+                }
+            }
+
+            $days = [];
+            $totals = ['late_minutes' => 0, 'late_days' => 0, 'short' => 0, 'half' => 0, 'full' => 0];
+            $lateRows = [];
+            $leaveRows = [];
+            for ($d = $start->copy(); $d->lte($end); $d->addDay()) {
+                $key = $d->toDateString();
+                $holidayName = $holidayMap[$key] ?? null;
+                $hasPunch = isset($inByDay[$key]) || isset($outByDay[$key]);
+                $isHoliday = $holidayName !== null || ($d->isSunday() && !$hasPunch);
+                $remarks = isset($remarksByDay[$key]) ? implode(' / ', $remarksByDay[$key]) : '';
+                $late = $lateByDay[$key] ?? null;
+                $kind = $leaveByDay[$key] ?? null;
+
+                if ($late !== null) {
+                    $totals['late_days']++;
+                    $totals['late_minutes'] += $late;
+                    $lateRows[] = [
+                        'date' => $key,
+                        'time_in' => $inByDay[$key] ?? '',
+                        'time_out' => $outByDay[$key] ?? '',
+                        'late_minutes' => $late,
+                    ];
+                }
+                if ($kind) {
+                    $totals[$kind]++;
+                    $leaveRows[] = ['date' => $key, 'time_in' => $inByDay[$key] ?? '', 'time_out' => $outByDay[$key] ?? '', 'kind' => $kind];
+                }
+
+                $days[] = [
+                    'date' => $key,
+                    'day' => $d->format('l'),
+                    'remarks' => $remarks,
+                    'is_holiday' => $isHoliday,
+                    'time_in' => $inByDay[$key] ?? '',
+                    'time_out' => $outByDay[$key] ?? '',
+                    'late_minutes' => $late,
+                    'leave' => $kind,
+                ];
+            }
+
+            $cumulativeNoPay = 0.0;
+            $monthly = [];
+            foreach ($yearly as $m => $v) {
+                $cumulativeNoPay += $v['nopay'];
+                $monthly[] = [
+                    'month' => $m,
+                    'month_name' => \Carbon\Carbon::create($year, $m, 1)->format('M'),
+                    'full' => $v['full'],
+                    'short' => $v['short'],
+                    'half' => $v['half'],
+                    'cumulative_nopay' => round($cumulativeNoPay, 2),
+                ];
+            }
+
+            $result[] = [
+                'employee_id' => $emp->id,
+                'emp_no' => $emp->attendance_employee_no ?? '-',
+                'epf_no' => $emp->epf ?? $emp->epf_number ?? $emp->epf_member_no ?? '-',
+                'name' => $emp->full_name ?: ($emp->name_with_initials ?: ($emp->display_name ?: '-')),
+                'days' => $days,
+                'totals' => $totals,
+                'late_rows' => $lateRows,
+                'leave_rows' => $leaveRows,
+                'monthly_summary' => $monthly,
+            ];
+        }
+
+        return response()->json($result);
     }
 }

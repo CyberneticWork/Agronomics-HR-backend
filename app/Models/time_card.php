@@ -27,6 +27,7 @@ class time_card extends Model
         'shift_id',
         // --- අලුතින් එකතු කළ කොටස ---
         'reason', 
+        'remarks',
         'break_status'
         // ------------------------
     ];

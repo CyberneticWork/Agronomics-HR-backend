@@ -546,6 +546,7 @@ class ScheduleReportService
                 return [
                     'name' => $companyModel->name,
                     'registration_no' => $companyModel->company_code ?? '-',
+                    'location' => $companyModel->location ?? '',
                 ];
             }
         }
@@ -562,6 +563,7 @@ class ScheduleReportService
         return [
             'name' => $companyName,
             'registration_no' => $companyModel->company_code ?? '-',
+            'location' => $companyModel->location ?? '',
         ];
     }
 

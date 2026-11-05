@@ -241,6 +241,7 @@ Route::get('/reports/epf-etf', [ReportController::class, 'downloadEpfEtf']);
 Route::get('/reports/monthly-data', [ReportController::class, 'getMonthlyReportData']);
 Route::get('/reports/schedule-data', [ReportController::class, 'getScheduleReportData']);
 Route::get('/reports/leave-summary', [ReportController::class, 'leaveSummary']);
+Route::get('/reports/attendance-report', [ReportController::class, 'attendanceReport']);
 
 // ✅ Special route FIRST (Bonuses)
 Route::get('/bonuses/by-company-or-department', [BonusesController::class, 'getBonusesByCompanyOrDepartment']);

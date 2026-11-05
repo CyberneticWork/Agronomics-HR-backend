@@ -75,6 +75,7 @@ class TimeCardController extends Controller
                         : ($card->entry == 2 ? 'OUT' : ($card->entry == 0 ? 'Early OUT' : null)),
                     'department' => $card->employee->organizationAssignment->department->name ?? null,
                     'status' => $card->status,
+                    'remarks' => $card->remarks,
                     'nic' => $card->employee->nic ?? null,
                 ];
             });
@@ -90,6 +91,7 @@ class TimeCardController extends Controller
             'date' => 'required|date',
             'entry' => 'required',
             'status' => 'required',
+            'remarks' => 'nullable|string|max:255',
         ]);
 
         $employee = employee::find($validated['employee_id']);
@@ -182,6 +184,7 @@ class TimeCardController extends Controller
             'approval_status' => 'Pending',
             'fingerprint_clock' => $fingerprintClock,
             'actual_date' => $actual_date,
+            'remarks' => isset($validated['remarks']) && trim($validated['remarks']) !== '' ? trim($validated['remarks']) : null,
         ];
         $source = $request->input('entry_source', 'manual');
         if (!in_array($source, ['manual', 'import'], true)) {
@@ -398,6 +401,7 @@ class TimeCardController extends Controller
             'entry' => 'required|in:0,1,2',
             'status' => 'required|in:IN,Late Coming,OUT,Absent,Early OUT',
             'reason' => 'nullable|string|max:500',
+            'remarks' => 'nullable|string|max:255',
         ]);
 
         $timeCard = time_card::findOrFail($id);
@@ -508,6 +512,7 @@ class TimeCardController extends Controller
             'status' => $finalStatus,
             'actual_date' => $actual_date,
             'approval_status' => 'Pending',
+            'remarks' => isset($validated['remarks']) && trim($validated['remarks']) !== '' ? trim($validated['remarks']) : null,
         ]);
         TimeCardAuditService::log(
             $timeCard,
